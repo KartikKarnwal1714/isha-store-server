@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const Product = require("../models/Product");
 const User = require("../models/User");
 const Order = require("../models/Order");
+const Review = require("../models/Review");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const cloudinary = require("../config/cloudinary");
@@ -994,6 +995,48 @@ exports.deleteProduct = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Product deletion failed",
+    });
+  }
+};
+
+// ======================================================
+// DELETE ALL PRODUCTS
+// ======================================================
+
+exports.deleteAllProducts = async (req, res) => {
+  try {
+    // Grab ids first so we can clean up related collections
+    const productIds = await Product.find().distinct("_id");
+
+    await Product.deleteMany({});
+
+    // Remove references from every user's wishlist, cart and recently viewed
+    await User.updateMany(
+      {},
+      {
+        $set: {
+          wishlist: [],
+          cart: [],
+          recentlyViewed: [],
+        },
+      }
+    );
+
+    // Remove reviews that belonged to the deleted products
+    await Review.deleteMany({
+      product: { $in: productIds },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "All products deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete all products error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to delete all products",
     });
   }
 };

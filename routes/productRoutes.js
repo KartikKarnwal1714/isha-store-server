@@ -21,6 +21,7 @@ const {
   getProductById,
   updateProduct,
   deleteProduct,
+  deleteAllProducts,
   dashboardAnalytics,
   importProductsExcel,
   trackProductView,
@@ -97,6 +98,15 @@ router.put(
   requireAdmin,
   upload.array("images", 20),
   updateProduct
+);
+
+// DELETE ALL PRODUCTS
+// NOTE: must be defined BEFORE "/:id" so it isn't captured as an id param
+router.delete(
+  "/delete-all",
+  protect,
+  requireAdmin,
+  deleteAllProducts
 );
 
 // DELETE PRODUCT
