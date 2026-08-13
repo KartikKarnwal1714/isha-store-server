@@ -3,7 +3,6 @@ const jwt = require("jsonwebtoken");
 const Product = require("../models/Product");
 const User = require("../models/User");
 const Order = require("../models/Order");
-const Review = require("../models/Review");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const cloudinary = require("../config/cloudinary");
@@ -930,25 +929,90 @@ exports.updateProduct = async (req, res) => {
         });
       }
 
-      product.colors = updatedColors.map((color) => ({
-        colorName: color.colorName || "Default",
-        colorCode: color.colorCode || "#000000",
-        images: Array.isArray(color.images)
+      // ------------------------------------------------
+      // Upload any newly attached files (from the Edit
+      // Product page's per-colour "choose image file"
+      // inputs). Each colour tells us how many of these
+      // freshly uploaded files belong to it via
+      // `imageCount`, and files are appended to the
+      // request in the same colour order on the frontend,
+      // so we can assign them sequentially.
+      // ------------------------------------------------
+
+      const uploadedImages = [];
+
+      if (req.files && req.files.length > 0) {
+        for (const file of req.files) {
+          const result = await cloudinary.uploader.upload(
+            `data:${file.mimetype};base64,${file.buffer.toString(
+              "base64"
+            )}`,
+            {
+              folder: "products",
+            }
+          );
+
+          uploadedImages.push(result.secure_url);
+        }
+      }
+
+      let fileCursor = 0;
+
+      product.colors = updatedColors.map((color) => {
+        const imageCount = Number(color.imageCount || 0);
+
+        const assignedImages = uploadedImages.slice(
+          fileCursor,
+          fileCursor + imageCount
+        );
+
+        fileCursor += imageCount;
+
+        // Images already saved that the admin chose to keep.
+        // Falls back to `color.images` for backward
+        // compatibility with older callers that send the
+        // full resolved image list directly.
+        const keptImages = Array.isArray(
+          color.existingImages
+        )
+          ? color.existingImages
+              .map((url) => String(url).trim())
+              .filter(Boolean)
+          : Array.isArray(color.images)
           ? color.images
-          : [],
-        sizes: Array.isArray(color.sizes)
-          ? color.sizes.map((size) => ({
-              size: size.size,
-              stock: Number(size.stock || 0),
-              price: Number(size.price || 0),
-              originalPrice: Number(
-                size.originalPrice || 0
-              ),
-              sku: size.sku || "",
-              barcode: size.barcode || "",
-            }))
-          : [],
-      }));
+              .filter((img) => typeof img === "string")
+              .map((url) => url.trim())
+              .filter(Boolean)
+          : [];
+
+        const urlImages = Array.isArray(color.imageUrls)
+          ? color.imageUrls
+              .map((url) => String(url).trim())
+              .filter(Boolean)
+          : [];
+
+        return {
+          colorName: color.colorName || "Default",
+          colorCode: color.colorCode || "#000000",
+          images: [
+            ...keptImages,
+            ...assignedImages,
+            ...urlImages,
+          ],
+          sizes: Array.isArray(color.sizes)
+            ? color.sizes.map((size) => ({
+                size: size.size,
+                stock: Number(size.stock || 0),
+                price: Number(size.price || 0),
+                originalPrice: Number(
+                  size.originalPrice || 0
+                ),
+                sku: size.sku || "",
+                barcode: size.barcode || "",
+              }))
+            : [],
+        };
+      });
     }
 
     await product.save();
@@ -1001,42 +1065,25 @@ exports.deleteProduct = async (req, res) => {
 
 // ======================================================
 // DELETE ALL PRODUCTS
+// Guarded on the frontend by an admin-password re-check
+// (two-step verification) before this request is ever sent.
 // ======================================================
 
 exports.deleteAllProducts = async (req, res) => {
   try {
-    // Grab ids first so we can clean up related collections
-    const productIds = await Product.find().distinct("_id");
-
-    await Product.deleteMany({});
-
-    // Remove references from every user's wishlist, cart and recently viewed
-    await User.updateMany(
-      {},
-      {
-        $set: {
-          wishlist: [],
-          cart: [],
-          recentlyViewed: [],
-        },
-      }
-    );
-
-    // Remove reviews that belonged to the deleted products
-    await Review.deleteMany({
-      product: { $in: productIds },
-    });
+    const result = await Product.deleteMany({});
 
     return res.status(200).json({
       success: true,
-      message: "All products deleted successfully",
+      message: `${result.deletedCount || 0} product(s) deleted successfully`,
+      deletedCount: result.deletedCount || 0,
     });
   } catch (error) {
     console.error("Delete all products error:", error);
 
     return res.status(500).json({
       success: false,
-      message: error.message || "Failed to delete all products",
+      message: error.message || "Products deletion failed",
     });
   }
 };

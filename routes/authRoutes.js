@@ -7,6 +7,7 @@ const sendOtpSms = require("../utils/sendOtpSms");
 
 const {
   protect,
+  requireAdmin,
 } = require("../middleware/authMiddleware");
 
 const router = express.Router();
@@ -99,6 +100,62 @@ router.post(
       return res.status(500).json({
         success: false,
         message: "Admin login failed",
+      });
+    }
+  }
+);
+
+// ======================================================
+// VERIFY ADMIN PASSWORD (for sensitive re-confirmation steps
+// like "Delete All Products")
+// POST /api/auth/verify-admin-password
+// body: { password }
+// Requires the admin to already be logged in (valid token) -
+// this just re-checks the password, it does not issue a new
+// token.
+// ======================================================
+
+router.post(
+  "/verify-admin-password",
+  protect,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const password = String(
+        req.body.password || ""
+      );
+
+      if (!password) {
+        return res.status(400).json({
+          success: false,
+          message: "Password is required",
+        });
+      }
+
+      const configuredPassword = String(
+        process.env.ADMIN_PASSWORD || ""
+      );
+
+      if (password !== configuredPassword) {
+        return res.status(401).json({
+          success: false,
+          message: "Incorrect password",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Password verified",
+      });
+    } catch (error) {
+      console.error(
+        "Verify admin password error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Password verification failed",
       });
     }
   }

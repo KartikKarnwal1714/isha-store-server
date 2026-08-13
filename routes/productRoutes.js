@@ -101,9 +101,10 @@ router.put(
 );
 
 // DELETE ALL PRODUCTS
-// NOTE: must be defined BEFORE "/:id" so it isn't captured as an id param
+// NOTE: this must be registered before "/:id" so that
+// "/all" is not swallowed by the ":id" param route.
 router.delete(
-  "/delete-all",
+  "/bulk/all",
   protect,
   requireAdmin,
   deleteAllProducts
