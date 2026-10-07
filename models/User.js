@@ -134,6 +134,32 @@ const userSchema = new mongoose.Schema(
 ],
 
 
+recentSearches: [
+  {
+    query: {
+      type: String,
+      trim: true,
+    },
+
+    categories: {
+      type: [String],
+      default: [],
+    },
+
+    subCategories: {
+      type: [String],
+      default: [],
+    },
+
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+],
+
+
+
     savedCards: [
   {
     cardHolder: String,

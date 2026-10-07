@@ -124,6 +124,9 @@ require("./routes/locationRoutes");
 const paymentRoutes =
 require("./routes/paymentRoutes");
 
+const subcategoryRoutes =
+require("./routes/subcategoryRoutes");
+
 
 app.use(
   "/api/orders",
@@ -138,6 +141,11 @@ app.use(
 app.use(
   "/api/brands",
   brandRoutes
+);
+
+app.use(
+  "/api/subcategories",
+  subcategoryRoutes
 );
 
 app.use(
@@ -167,6 +175,8 @@ app.use("/api/addresses", addressRoutes);
 app.use("/api/location", locationRoutes);
 
 app.use("/api/payment", paymentRoutes);
+
+
 
 // TEST ROUTE
 app.get("/", (req, res) => {

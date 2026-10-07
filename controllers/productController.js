@@ -1644,6 +1644,144 @@ exports.trackProductView = async (
 };
 
 // ======================================================
+// TRACK CUSTOMER SEARCH
+// POST /api/products/track-search
+// ======================================================
+
+exports.trackProductSearch = async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+
+    const query = String(req.body.query || "").trim();
+
+    if (
+      !userId ||
+      !mongoose.Types.ObjectId.isValid(userId)
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Customer authentication is required",
+      });
+    }
+
+    if (query.length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: "Search query is too short",
+      });
+    }
+
+    const searchRegex = new RegExp(
+      escapeRegex(query),
+      "i"
+    );
+
+    const matchedProducts = await Product.find({
+      status: "active",
+      totalStock: {
+        $gt: 0,
+      },
+
+      $or: [
+        {
+          name: searchRegex,
+        },
+        {
+          brand: searchRegex,
+        },
+        {
+          category: searchRegex,
+        },
+        {
+          subCategory: searchRegex,
+        },
+        {
+          description: searchRegex,
+        },
+      ],
+    })
+      .select("category subCategory")
+      .limit(100)
+      .lean();
+
+    const categories = [
+      ...new Set(
+        matchedProducts
+          .map(
+            (product) =>
+              product.category
+          )
+          .filter(Boolean)
+      ),
+    ];
+
+    const subCategories = [
+      ...new Set(
+        matchedProducts
+          .map(
+            (product) =>
+              product.subCategory
+          )
+          .filter(Boolean)
+      ),
+    ].slice(0, 20);
+
+    const cleanQuery = query.toLowerCase();
+
+    await User.findByIdAndUpdate(
+      userId,
+      {
+        $pull: {
+          recentSearches: {
+            query: cleanQuery,
+          },
+        },
+      }
+    );
+
+    await User.findByIdAndUpdate(
+      userId,
+      {
+        $push: {
+          recentSearches: {
+            $each: [
+              {
+                query: cleanQuery,
+                categories,
+                subCategories,
+                createdAt: new Date(),
+              },
+            ],
+
+            $position: 0,
+            $slice: 20,
+          },
+        },
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Search interest recorded",
+      categories,
+      subCategories,
+    });
+  } catch (error) {
+    console.error(
+      "Track customer search error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Search interest could not be recorded",
+    });
+  }
+};
+
+// ======================================================
 // GET PRODUCT RECOMMENDATIONS
 // GET /api/products/:productId/recommendations
 // ======================================================
@@ -1854,15 +1992,21 @@ exports.getCustomerRecommendations =
     try {
       const { customerId } = req.params;
 
-      const requestedLimit = Number.parseInt(
-        req.query.limit,
-        10
-      );
+      const requestedLimit =
+        Number.parseInt(
+          req.query.limit,
+          10
+        );
 
       const limit =
-        Number.isFinite(requestedLimit) &&
+        Number.isFinite(
+          requestedLimit
+        ) &&
         requestedLimit > 0
-          ? Math.min(requestedLimit, 36)
+          ? Math.min(
+              requestedLimit,
+              36
+            )
           : 12;
 
       if (
@@ -1872,44 +2016,60 @@ exports.getCustomerRecommendations =
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid customer ID",
+          message:
+            "Invalid customer ID",
         });
       }
 
-      const customer = await User.findById(
-        customerId
-      )
-        .select("recentlyViewed")
-        .populate({
-          path: "recentlyViewed",
+      const customer =
+        await User.findById(
+          customerId
+        )
+          .select(
+            "recentlyViewed recentSearches"
+          )
+          .populate({
+            path: "recentlyViewed",
 
-          select: [
-            "category",
-            "subCategory",
-            "brand",
-            "jewelleryFor",
-            "minimumPrice",
-            "price",
-          ].join(" "),
-        })
-        .lean();
+            select: [
+              "category",
+              "subCategory",
+              "brand",
+              "jewelleryFor",
+              "minimumPrice",
+              "price",
+            ].join(" "),
+          })
+          .lean();
 
       if (!customer) {
         return res.status(404).json({
           success: false,
-          message: "Customer not found",
+          message:
+            "Customer not found",
         });
       }
 
-      const recentlyViewed = Array.isArray(
-        customer.recentlyViewed
-      )
-        ? customer.recentlyViewed.filter(Boolean)
-        : [];
+      const recentlyViewed =
+        Array.isArray(
+          customer.recentlyViewed
+        )
+          ? customer.recentlyViewed.filter(
+              Boolean
+            )
+          : [];
+
+      const recentSearches =
+        Array.isArray(
+          customer.recentSearches
+        )
+          ? customer.recentSearches
+          : [];
 
       const excludedProductIds =
         recentlyViewed.map(
-          (product) => product._id
+          (product) =>
+            product._id
         );
 
       const baseFilter =
@@ -1917,9 +2077,106 @@ exports.getCustomerRecommendations =
           excludedProductIds,
         });
 
-      if (recentlyViewed.length === 0) {
+      // ---------------------------------------------
+      // CATEGORIES FROM VIEWED PRODUCTS
+      // ---------------------------------------------
+
+      const viewedCategories =
+        recentlyViewed
+          .map(
+            (product) =>
+              product.category
+          )
+          .filter(Boolean);
+
+      // ---------------------------------------------
+      // CATEGORIES FROM SEARCHES
+      // ---------------------------------------------
+
+      const searchCategories =
+        recentSearches.flatMap(
+          (search) =>
+            Array.isArray(
+              search.categories
+            )
+              ? search.categories
+              : []
+        );
+
+      const categories = [
+        ...new Set([
+          ...viewedCategories,
+          ...searchCategories,
+        ]),
+      ];
+
+      // ---------------------------------------------
+      // SUBCATEGORIES
+      // ---------------------------------------------
+
+      const subCategories = [
+        ...new Set([
+          ...recentlyViewed
+            .map(
+              (product) =>
+                product.subCategory
+            )
+            .filter(Boolean),
+
+          ...recentSearches.flatMap(
+            (search) =>
+              Array.isArray(
+                search.subCategories
+              )
+                ? search.subCategories
+                : []
+          ),
+        ]),
+      ];
+
+      // ---------------------------------------------
+      // BRANDS
+      // ---------------------------------------------
+
+      const brands = [
+        ...new Set(
+          recentlyViewed
+            .map(
+              (product) =>
+                product.brand
+            )
+            .filter(Boolean)
+        ),
+      ];
+
+      // ---------------------------------------------
+      // JEWELLERY TYPE
+      // ---------------------------------------------
+
+      const jewelleryTypes = [
+        ...new Set(
+          recentlyViewed
+            .map(
+              (product) =>
+                product.jewelleryFor
+            )
+            .filter(Boolean)
+        ),
+      ];
+
+      // ---------------------------------------------
+      // NEW CUSTOMER
+      // ---------------------------------------------
+
+      if (
+        categories.length === 0 &&
+        subCategories.length === 0 &&
+        brands.length === 0
+      ) {
         const popularProducts =
-          await Product.find(baseFilter)
+          await Product.find(
+            baseFilter
+          )
             .select(
               getRecommendationProductFields()
             )
@@ -1937,60 +2194,109 @@ exports.getCustomerRecommendations =
           personalized: false,
           reason:
             "Popular products for new customers",
-          count: popularProducts.length,
-          recommendations: popularProducts,
+          count:
+            popularProducts.length,
+          recommendations:
+            popularProducts,
         });
       }
 
-      const categories = [
-        ...new Set(
-          recentlyViewed
-            .map((product) => product.category)
-            .filter(Boolean)
-        ),
+      // ---------------------------------------------
+      // CROSS CATEGORY MAP
+      // ---------------------------------------------
+
+      const crossCategoryMap = {
+        Women: [
+          "Womens-Cosmetics",
+          "Jewellery",
+        ],
+
+        Men: [
+          "Mens-Cosmetics",
+          "Jewellery",
+        ],
+
+        Kids: [
+          "Kids-Cosmetics",
+        ],
+
+        "Womens-Cosmetics": [
+          "Women",
+          "Jewellery",
+        ],
+
+        "Mens-Cosmetics": [
+          "Men",
+          "Jewellery",
+        ],
+
+        "Kids-Cosmetics": [
+          "Kids",
+        ],
+      };
+
+      // ---------------------------------------------
+      // FINAL CATEGORY LIST
+      // ---------------------------------------------
+
+      const recommendationCategories = [
+        ...new Set([
+          ...categories,
+
+          ...categories.flatMap(
+            (category) =>
+              crossCategoryMap[
+                category
+              ] || []
+          ),
+        ]),
       ];
 
-      const subCategories = [
-        ...new Set(
-          recentlyViewed
-            .map(
-              (product) =>
-                product.subCategory
+      // ---------------------------------------------
+      // LOAD PRODUCTS FOR EACH CATEGORY
+      // ---------------------------------------------
+
+      const categoryCandidates = [];
+
+      for (
+        const category of
+          recommendationCategories
+      ) {
+        const categoryProducts =
+          await Product.find({
+            ...baseFilter,
+            category,
+          })
+            .select(
+              getRecommendationProductFields()
             )
-            .filter(Boolean)
-        ),
-      ];
+            .sort({
+              featured: -1,
+              averageRating: -1,
+              soldCount: -1,
+              views: -1,
+              createdAt: -1,
+            })
+            .limit(12)
+            .lean();
 
-      const brands = [
-        ...new Set(
-          recentlyViewed
-            .map((product) => product.brand)
-            .filter(Boolean)
-        ),
-      ];
-
-      const jewelleryTypes = [
-        ...new Set(
-          recentlyViewed
-            .map(
-              (product) =>
-                product.jewelleryFor
-            )
-            .filter(Boolean)
-        ),
-      ];
-
-      const preferenceConditions = [];
-
-      if (categories.length > 0) {
-        preferenceConditions.push({
-          category: {
-            $in: categories,
-          },
+        categoryCandidates.push({
+          category,
+          products:
+            categoryProducts,
         });
       }
 
-      if (subCategories.length > 0) {
+      // ---------------------------------------------
+      // OTHER PERSONALIZED PRODUCTS
+      // ---------------------------------------------
+
+      const preferenceConditions =
+        [];
+
+      if (
+        subCategories.length > 0
+      ) {
         preferenceConditions.push({
           subCategory: {
             $in: subCategories,
@@ -2006,7 +2312,9 @@ exports.getCustomerRecommendations =
         });
       }
 
-      if (jewelleryTypes.length > 0) {
+      if (
+        jewelleryTypes.length > 0
+      ) {
         preferenceConditions.push({
           jewelleryFor: {
             $in: jewelleryTypes,
@@ -2014,23 +2322,17 @@ exports.getCustomerRecommendations =
         });
       }
 
-      let candidates = [];
+      if (
+        preferenceConditions.length >
+        0
+      ) {
+        const preferredProducts =
+          await Product.find({
+            ...baseFilter,
 
-      if (preferenceConditions.length > 0) {
-        candidates = await Product.find({
-          ...baseFilter,
-          $or: preferenceConditions,
-        })
-          .select(
-            getRecommendationProductFields()
-          )
-          .limit(100)
-          .lean();
-      }
-
-      if (candidates.length < limit) {
-        const fallbackProducts =
-          await Product.find(baseFilter)
+            $or:
+              preferenceConditions,
+          })
             .select(
               getRecommendationProductFields()
             )
@@ -2043,98 +2345,241 @@ exports.getCustomerRecommendations =
             .limit(50)
             .lean();
 
-        candidates = [
-          ...candidates,
-          ...fallbackProducts,
-        ];
+        categoryCandidates.push({
+          category:
+            "preferred",
+          products:
+            preferredProducts,
+        });
       }
 
-      const recommendations =
-        removeDuplicateProducts(
-          candidates.sort(
-            (first, second) => {
-              let firstScore = 0;
-              let secondScore = 0;
+      // ---------------------------------------------
+      // SCORE PRODUCTS
+      // ---------------------------------------------
 
-              if (
-                categories.includes(
-                  first.category
-                )
-              ) {
-                firstScore += 30;
-              }
+      const scoreProduct =
+        (product) => {
+          let score = 0;
 
-              if (
-                categories.includes(
-                  second.category
-                )
-              ) {
-                secondScore += 30;
-              }
+          if (
+            categories.includes(
+              product.category
+            )
+          ) {
+            score += 35;
+          }
 
-              if (
-                subCategories.includes(
-                  first.subCategory
-                )
-              ) {
-                firstScore += 35;
-              }
+          const crossCategories =
+            categories.flatMap(
+              (category) =>
+                crossCategoryMap[
+                  category
+                ] || []
+            );
 
-              if (
-                subCategories.includes(
-                  second.subCategory
-                )
-              ) {
-                secondScore += 35;
-              }
+          if (
+            crossCategories.includes(
+              product.category
+            )
+          ) {
+            score += 45;
+          }
 
-              if (
-                brands.includes(first.brand)
-              ) {
-                firstScore += 20;
-              }
+          if (
+            subCategories.includes(
+              product.subCategory
+            )
+          ) {
+            score += 35;
+          }
 
-              if (
-                brands.includes(second.brand)
-              ) {
-                secondScore += 20;
-              }
+          if (
+            brands.includes(
+              product.brand
+            )
+          ) {
+            score += 20;
+          }
 
-              firstScore +=
-                Number(
-                  first.averageRating || 0
-                ) * 2;
+          if (
+            jewelleryTypes.includes(
+              product.jewelleryFor
+            )
+          ) {
+            score += 15;
+          }
 
-              secondScore +=
-                Number(
-                  second.averageRating || 0
-                ) * 2;
+          score += Math.min(
+            Number(
+              product.averageRating ||
+                0
+            ) * 2,
+            10
+          );
 
-              firstScore += Math.min(
-                Number(first.soldCount || 0) /
-                  10,
-                10
-              );
+          score += Math.min(
+            Number(
+              product.soldCount || 0
+            ) / 10,
+            10
+          );
 
-              secondScore += Math.min(
-                Number(
-                  second.soldCount || 0
-                ) / 10,
-                10
-              );
+          score += Math.min(
+            Number(
+              product.views || 0
+            ) / 100,
+            5
+          );
 
-              return secondScore - firstScore;
+          if (
+            product.featured
+          ) {
+            score += 5;
+          }
+
+          return score;
+        };
+
+      // ---------------------------------------------
+      // COMBINE ALL CANDIDATES
+      // ---------------------------------------------
+
+      const allCandidates = [];
+
+      categoryCandidates.forEach(
+        (group) => {
+          group.products.forEach(
+            (product) => {
+              allCandidates.push({
+                ...product,
+
+                recommendationScore:
+                  scoreProduct(
+                    product
+                  ),
+              });
             }
-          ),
-          limit
+          );
+        }
+      );
+
+      allCandidates.sort(
+        (first, second) =>
+          second.recommendationScore -
+          first.recommendationScore
+      );
+
+      const rankedProducts =
+        removeDuplicateProducts(
+          allCandidates,
+          limit * 3
         );
+
+      // ---------------------------------------------
+      // GUARANTEE CROSS CATEGORY PRODUCTS
+      // ---------------------------------------------
+
+      const finalRecommendations =
+        [];
+
+      const usedIds =
+        new Set();
+
+      const addProduct =
+        (product) => {
+          const id = String(
+            product?._id || ""
+          );
+
+          if (
+            !id ||
+            usedIds.has(id)
+          ) {
+            return;
+          }
+
+          usedIds.add(id);
+
+          finalRecommendations.push(
+            product
+          );
+        };
+
+      // First add cross-category
+      // recommendations.
+      for (
+        const sourceCategory of
+          categories
+      ) {
+        const relatedCategories =
+          crossCategoryMap[
+            sourceCategory
+          ] || [];
+
+        for (
+          const relatedCategory of
+            relatedCategories
+        ) {
+          const group =
+            categoryCandidates.find(
+              (item) =>
+                item.category ===
+                relatedCategory
+            );
+
+          if (!group) {
+            continue;
+          }
+
+          group.products
+            .slice(0, 4)
+            .forEach(
+              addProduct
+            );
+        }
+      }
+
+      // Then add normal personalized
+      // recommendations.
+      rankedProducts.forEach(
+        addProduct
+      );
+
+      const recommendations =
+        finalRecommendations
+          .slice(0, limit)
+          .map(
+            (product) => {
+              const {
+                recommendationScore,
+                ...cleanProduct
+              } = product;
+
+              return cleanProduct;
+            }
+          );
 
       return res.status(200).json({
         success: true,
+
         personalized: true,
+
         reason:
-          "Based on recently viewed products",
-        count: recommendations.length,
+          categories.some(
+            (category) =>
+              [
+                "Women",
+                "Womens-Cosmetics",
+              ].includes(
+                category
+              )
+          )
+            ? "Based on your activity, including women's fashion, cosmetics and jewellery"
+            : "Based on your recent searches and viewed products",
+
+        count:
+          recommendations.length,
+
         recommendations,
       });
     } catch (error) {
@@ -2151,7 +2596,7 @@ exports.getCustomerRecommendations =
       });
     }
   };
-
+  
 // ======================================================
 // CUSTOMERS ALSO BOUGHT
 // GET /api/products/:productId/frequently-bought

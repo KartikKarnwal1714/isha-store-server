@@ -13,6 +13,7 @@ const excelUpload = multer({
 const {
   protect,
   requireAdmin,
+  requireCustomer,
 } = require("../middleware/authMiddleware");
 
 const {
@@ -25,6 +26,7 @@ const {
   dashboardAnalytics,
   importProductsExcel,
   trackProductView,
+  trackProductSearch,
   getProductRecommendations,
   getCustomerRecommendations,
   getFrequentlyBoughtTogether,
@@ -79,11 +81,20 @@ router.get(
   getFrequentlyBoughtTogether
 );
 
+// TRACK CUSTOMER SEARCH
+router.post(
+  "/track-search",
+  protect,
+  requireCustomer,
+  trackProductSearch
+);
+
 // TRACK PRODUCT VIEW
 router.post(
   "/:productId/view",
   trackProductView
 );
+
 
 // GET SINGLE PRODUCT
 router.get(
